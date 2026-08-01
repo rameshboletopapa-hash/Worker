@@ -1,11 +1,9 @@
 // ============================================================
-// X-Panel — Firebase RTDB Security Probe → Telegram Logger
+// X-Panel — Firebase RTDB Security Probe + Device Stats → Telegram
 // ============================================================
 // This Worker receives a Firebase RTDB URL, probes its public
-// read exposure itself, and posts a security verdict to a
-// Telegram channel. It does NOT log, save, or relay client-
-// supplied Firebase URLs as the headline data — the verdict
-// (which public paths return 200) is the headline.
+// read exposure, and also accepts device stats (total, online, offline)
+// to send a combined message to Telegram.
 //
 // Env vars (set via `wrangler secret put`):
 //   BOT_TOKEN   — Telegram bot token
@@ -19,14 +17,15 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    // Health check
     const url = new URL(request.url);
+
+    // Health check
     if (url.pathname === '/' || url.pathname === '/health') {
       return new Response(
         JSON.stringify({
           status: 'ok',
           service: 'x-panel-rtdb-probe',
-          note: 'POST { url } to /probe'
+          note: 'POST { url, total, online, offline } to /probe'
         }),
         { status: 200, headers: { 'content-type': 'application/json', ...corsHeaders() } }
       );
@@ -43,7 +42,7 @@ export default {
       );
     }
 
-    // 1. Parse URL from client
+    // 1. Parse request body
     let body;
     try {
       body = await request.json();
@@ -61,15 +60,15 @@ export default {
 
     const normalized = target.endsWith('/') ? target : target + '/';
 
-    // 2. Probe the RTDB ourselves
+    // 2. Probe the RTDB
     const probePaths = [
-      '.json?shallow=true',         // root — tells us if whole DB is public
-      'device_count.json',          // X-Panel specific path
+      '.json?shallow=true',
+      'device_count.json',
       'users.json',
       'messages.json',
       'inbox.json',
       'sms.json',
-      '.json'                       // full dump
+      '.json'
     ];
 
     const results = await Promise.all(
@@ -85,7 +84,6 @@ export default {
           return {
             path: p,
             status: r.status,
-            // If we got 200 + non-empty JSON, it's publicly readable
             exposed: r.status === 200 && txt && txt !== 'null' && txt.length > 2,
             bytes: txt.length
           };
@@ -98,24 +96,38 @@ export default {
     const exposedPaths = results.filter(r => r.exposed).map(r => r.path);
     const verdict = exposedPaths.length > 0 ? 'PUBLIC' : 'SECURED';
 
-    // 3. Format blockquote log for Telegram
+    // 3. Format Telegram message with blockquotes and emojis
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
     const verdictEmoji = verdict === 'PUBLIC' ? '🔓' : '🔒';
     const pathList = exposedPaths.length
       ? exposedPaths.map(p => `  • \`${p}\``).join('\n')
       : '  • _none_';
 
+    // Device stats (optional)
+    const total = body?.total;
+    const online = body?.online;
+    const offline = body?.offline;
+    const hasStats = (typeof total === 'number' && typeof online === 'number' && typeof offline === 'number');
+    let statsBlock = '';
+    if (hasStats) {
+      statsBlock = `
+> *Total Devices:* \`${total}\`
+> *Online:* \`${online}\`
+> *Offline:* \`${offline}\``;
+    }
+
     const logText =
-`${verdictEmoji} *X-Panel RTDB Probe*
+`${verdictEmoji} *X-Panel Status*
 
 > *Target:* \`${target}\`
 > *Verdict:* *${verdict}*
+${statsBlock}
 > *Public paths found:*
 ${pathList}
 > *Probed at:* \`${now}\`
 > *Probe count:* \`${results.length}\`
 
-_Channel: x-panel-security-log_`;
+_Channel: x-panel_`;
 
     // 4. Send to Telegram
     let tgOk = false;
@@ -139,7 +151,7 @@ _Channel: x-panel-security-log_`;
       tgError = String(e.message || e);
     }
 
-    // 5. Return verdict to client (no DB data, no credentials)
+    // 5. Return response
     return json({
       ok: true,
       target,
