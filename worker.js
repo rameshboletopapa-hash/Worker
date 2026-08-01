@@ -1,0 +1,169 @@
+// ============================================================
+// X-Panel — Firebase RTDB Security Probe → Telegram Logger
+// ============================================================
+// This Worker receives a Firebase RTDB URL, probes its public
+// read exposure itself, and posts a security verdict to a
+// Telegram channel. It does NOT log, save, or relay client-
+// supplied Firebase URLs as the headline data — the verdict
+// (which public paths return 200) is the headline.
+//
+// Env vars (set via `wrangler secret put`):
+//   BOT_TOKEN   — Telegram bot token
+//   CHAT_ID     — Telegram channel/group chat ID
+// ============================================================
+
+export default {
+  async fetch(request, env) {
+    // CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders() });
+    }
+
+    // Health check
+    const url = new URL(request.url);
+    if (url.pathname === '/' || url.pathname === '/health') {
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          service: 'x-panel-rtdb-probe',
+          note: 'POST { url } to /probe'
+        }),
+        { status: 200, headers: { 'content-type': 'application/json', ...corsHeaders() } }
+      );
+    }
+
+    if (url.pathname !== '/probe') {
+      return new Response('Not found', { status: 404, headers: corsHeaders() });
+    }
+
+    if (request.method !== 'POST') {
+      return new Response(
+        JSON.stringify({ error: 'Use POST' }),
+        { status: 405, headers: { 'content-type': 'application/json', ...corsHeaders() } }
+      );
+    }
+
+    // 1. Parse URL from client
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: 'Invalid JSON body' }, 400);
+    }
+
+    const target = (body?.url || '').trim();
+    if (!target) return json({ error: 'Missing "url" field' }, 400);
+
+    // Basic validation
+    if (!/^https:\/\/[a-zA-Z0-9-]+\.firebaseio\.com\/?$/.test(target)) {
+      return json({ error: 'URL must look like https://<project>.firebaseio.com' }, 400);
+    }
+
+    const normalized = target.endsWith('/') ? target : target + '/';
+
+    // 2. Probe the RTDB ourselves
+    const probePaths = [
+      '.json?shallow=true',         // root — tells us if whole DB is public
+      'device_count.json',          // X-Panel specific path
+      'users.json',
+      'messages.json',
+      'inbox.json',
+      'sms.json',
+      '.json'                       // full dump
+    ];
+
+    const results = await Promise.all(
+      probePaths.map(async (p) => {
+        const probeUrl = normalized + p;
+        try {
+          const r = await fetch(probeUrl, {
+            method: 'GET',
+            cf: { cacheTtl: 0, cacheEverything: false },
+            signal: AbortSignal.timeout(8000)
+          });
+          const txt = await r.text();
+          return {
+            path: p,
+            status: r.status,
+            // If we got 200 + non-empty JSON, it's publicly readable
+            exposed: r.status === 200 && txt && txt !== 'null' && txt.length > 2,
+            bytes: txt.length
+          };
+        } catch (e) {
+          return { path: p, status: 0, exposed: false, error: String(e.message || e) };
+        }
+      })
+    );
+
+    const exposedPaths = results.filter(r => r.exposed).map(r => r.path);
+    const verdict = exposedPaths.length > 0 ? 'PUBLIC' : 'SECURED';
+
+    // 3. Format blockquote log for Telegram
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+    const verdictEmoji = verdict === 'PUBLIC' ? '🔓' : '🔒';
+    const pathList = exposedPaths.length
+      ? exposedPaths.map(p => `  • \`${p}\``).join('\n')
+      : '  • _none_';
+
+    const logText =
+`${verdictEmoji} *X-Panel RTDB Probe*
+
+> *Target:* \`${target}\`
+> *Verdict:* *${verdict}*
+> *Public paths found:*
+${pathList}
+> *Probed at:* \`${now}\`
+> *Probe count:* \`${results.length}\`
+
+_Channel: x-panel-security-log_`;
+
+    // 4. Send to Telegram
+    let tgOk = false;
+    let tgError = null;
+    try {
+      const tgUrl = `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
+      const tgRes = await fetch(tgUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: env.CHAT_ID,
+          text: logText,
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true
+        })
+      });
+      const tgBody = await tgRes.json().catch(() => ({}));
+      tgOk = !!tgBody.ok;
+      if (!tgOk) tgError = tgBody.description || 'telegram api error';
+    } catch (e) {
+      tgError = String(e.message || e);
+    }
+
+    // 5. Return verdict to client (no DB data, no credentials)
+    return json({
+      ok: true,
+      target,
+      verdict,
+      exposedPaths,
+      results,
+      telegram: { posted: tgOk, error: tgError },
+      timestamp: now
+    });
+  }
+};
+
+function corsHeaders() {
+  return {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'access-control-max-age': '86400'
+  };
+}
+
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj, null, 2), {
+    status,
+    headers: { 'content-type': 'application/json', ...corsHeaders() }
+  });
+}
