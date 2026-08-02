@@ -1,24 +1,6 @@
 // ============================================================
 // X-Panel — Firebase RTDB Security Probe + Device Stats → Telegram
 // ============================================================
-// This Worker receives a Firebase RTDB URL, probes its public
-// read exposure, and also accepts device stats (total, online, offline)
-// to send a combined message to Telegram.
-//
-// Env vars (set via `wrangler secret put`):
-//   BOT_TOKEN   — Telegram bot token
-//   CHAT_ID     — Telegram channel/group chat ID
-// ============================================================
-
-export default {
-  async fetch(request, env) {
-    // CORS preflight
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders() });
-    }
-// ============================================================
-// X-Panel — Firebase RTDB Security Probe + Device Stats → Telegram
-// ============================================================
 // This Worker probes a Firebase RTDB and sends a combined message
 // with the security verdict and device stats (total, online, offline).
 // The exposed endpoints list and probe count are NOT shown.
