@@ -16,6 +16,24 @@ export default {
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
+// ============================================================
+// X-Panel — Firebase RTDB Security Probe + Device Stats → Telegram
+// ============================================================
+// This Worker probes a Firebase RTDB and sends a combined message
+// with the security verdict and device stats (total, online, offline).
+// The exposed endpoints list and probe count are NOT shown.
+//
+// Env vars (set via `wrangler secret put`):
+//   BOT_TOKEN   — Telegram bot token
+//   CHAT_ID     — Telegram channel/group chat ID
+// ============================================================
+
+export default {
+  async fetch(request, env) {
+    // CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders() });
+    }
 
     const url = new URL(request.url);
 
@@ -60,7 +78,7 @@ export default {
 
     const normalized = target.endsWith('/') ? target : target + '/';
 
-    // 2. Probe the RTDB
+    // 2. Probe the RTDB (but we won't show the results in the message)
     const probePaths = [
       '.json?shallow=true',
       'device_count.json',
@@ -96,38 +114,33 @@ export default {
     const exposedPaths = results.filter(r => r.exposed).map(r => r.path);
     const verdict = exposedPaths.length > 0 ? 'PUBLIC' : 'SECURED';
 
-    // 3. Format Telegram message with blockquotes and emojis
+    // 3. Build the Telegram message – clean and minimal
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
     const verdictEmoji = verdict === 'PUBLIC' ? '🔓' : '🔒';
-    const pathList = exposedPaths.length
-      ? exposedPaths.map(p => `  • \`${p}\``).join('\n')
-      : '  • _none_';
+    const verdictStatus = verdict === 'PUBLIC' ? '⚠️ Exposed' : '✅ Secured';
 
-    // Device stats (optional)
+    // Device stats (must be provided in the request)
     const total = body?.total;
     const online = body?.online;
     const offline = body?.offline;
     const hasStats = (typeof total === 'number' && typeof online === 'number' && typeof offline === 'number');
-    let statsBlock = '';
+
+    let statsLine = '';
     if (hasStats) {
-      statsBlock = `
-> *Total Devices:* \`${total}\`
-> *Online:* \`${online}\`
-> *Offline:* \`${offline}\``;
+      statsLine = `> 🩶 **Total:** \`${total}\`  ·  💚 **Online:** \`${online}\`  ·  💔 **Offline:** \`${offline}\``;
+    } else {
+      statsLine = `> *Device stats not provided.*`;
     }
 
     const logText =
-`${verdictEmoji} *X-Panel Status*
+`${verdictEmoji} *X‑Panel Security Alert*
 
-> *Target:* \`${target}\`
-> *Verdict:* *${verdict}*
-${statsBlock}
-> *Public paths found:*
-${pathList}
-> *Probed at:* \`${now}\`
-> *Probe count:* \`${results.length}\`
+> 📌 **Target:** \`${target}\`
+> 🛡️ **Verdict:** *${verdict}* ${verdictStatus}
+${statsLine}
+> 📅 **Checked:** \`${now}\`
 
-_Channel: x-panel_`;
+_Channel: #x-panel_`;
 
     // 4. Send to Telegram
     let tgOk = false;
@@ -156,8 +169,8 @@ _Channel: x-panel_`;
       ok: true,
       target,
       verdict,
-      exposedPaths,
-      results,
+      exposedPaths,   // still available in the JSON response, but not in the Telegram message
+      results,        // still available in the JSON response
       telegram: { posted: tgOk, error: tgError },
       timestamp: now
     });
