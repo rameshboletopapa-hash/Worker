@@ -1,5 +1,3 @@
-# wrangler.toml
-name = 'worker'
 name = "x-panel-rtdb-probe"
 main = "worker.js"
 compatibility_date = "2024-09-01"
