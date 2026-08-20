@@ -5,19 +5,22 @@
 // Probes the RTDB for public read exposure and sends a combined
 // message to Telegram.
 //
-// Environment variables (set with `wrangler secret put`):
-//   BOT_TOKEN   — Telegram bot token
-//   CHAT_ID     — Telegram channel/group chat ID
+// 🔥 HARDCODED credentials (replace with yours if needed)
 // ============================================================
+
+const BOT_TOKEN = '8638709881:AAEVUouEsSDxqI6wQLUx60cYPaubMMHr5h8';
+const CHAT_ID = '-1004332926748';
 
 export default {
   async fetch(request, env) {
+    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
     const url = new URL(request.url);
 
+    // Health check
     if (url.pathname === '/' || url.pathname === '/health') {
       return new Response(
         JSON.stringify({
@@ -40,6 +43,7 @@ export default {
       );
     }
 
+    // 1. Parse body
     let body;
     try {
       body = await request.json();
@@ -123,15 +127,16 @@ ${statsLine}
 
 _Channel: #x-panel_`;
 
+    // Send to Telegram using hardcoded credentials
     let tgOk = false;
     let tgError = null;
     try {
-      const tgUrl = `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
+      const tgUrl = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
       const tgRes = await fetch(tgUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          chat_id: env.CHAT_ID,
+          chat_id: CHAT_ID,
           text: logText,
           parse_mode: 'Markdown',
           disable_web_page_preview: true
