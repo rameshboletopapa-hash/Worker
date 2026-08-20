@@ -53,10 +53,14 @@ export default {
     const target = (body?.url || '').trim();
     if (!target) return json({ error: 'Missing "url" field' }, 400);
 
-    // ✅ UPDATED: Accept BOTH firebaseio.com AND firebasedatabase.app (with optional region)
-    // Matches: https://project.firebaseio.com OR https://project.region.firebasedatabase.app
-    if (!/^https:\/\/[a-zA-Z0-9-]+\.(firebaseio\.com|firebasedatabase\.app)(\/|$)/.test(target)) {
-      return json({ error: 'URL must be a valid Firebase RTDB URL (firebaseio.com or firebasedatabase.app)' }, 400);
+    // ✅ REMOVED strict domain check – only verify it's a valid HTTPS URL
+    try {
+      const parsed = new URL(target);
+      if (parsed.protocol !== 'https:') {
+        return json({ error: 'URL must use HTTPS protocol' }, 400);
+      }
+    } catch {
+      return json({ error: 'Invalid URL format' }, 400);
     }
 
     // Normalize: ensure trailing slash
