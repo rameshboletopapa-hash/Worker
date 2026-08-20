@@ -12,14 +12,12 @@
 
 export default {
   async fetch(request, env) {
-    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
     const url = new URL(request.url);
 
-    // Health check
     if (url.pathname === '/' || url.pathname === '/health') {
       return new Response(
         JSON.stringify({
@@ -42,7 +40,6 @@ export default {
       );
     }
 
-    // 1. Parse body
     let body;
     try {
       body = await request.json();
@@ -53,7 +50,7 @@ export default {
     const target = (body?.url || '').trim();
     if (!target) return json({ error: 'Missing "url" field' }, 400);
 
-    // ✅ REMOVED strict domain check – only verify it's a valid HTTPS URL
+    // Validate that it's a valid HTTPS URL (no domain restriction)
     try {
       const parsed = new URL(target);
       if (parsed.protocol !== 'https:') {
@@ -63,10 +60,8 @@ export default {
       return json({ error: 'Invalid URL format' }, 400);
     }
 
-    // Normalize: ensure trailing slash
     const normalized = target.endsWith('/') ? target : target + '/';
 
-    // 2. Probe the RTDB (we still do it, but won't show all exposed paths in Telegram)
     const probePaths = [
       '.json?shallow=true',
       'device_count.json',
@@ -102,12 +97,10 @@ export default {
     const exposedPaths = results.filter(r => r.exposed).map(r => r.path);
     const verdict = exposedPaths.length > 0 ? 'PUBLIC' : 'SECURED';
 
-    // 3. Build the Telegram message – clean, blockquoted, with stats
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
     const verdictEmoji = verdict === 'PUBLIC' ? '🔓' : '🔒';
     const verdictStatus = verdict === 'PUBLIC' ? '⚠️ Exposed' : '✅ Secured';
 
-    // Device stats (optional)
     const total = body?.total;
     const online = body?.online;
     const offline = body?.offline;
@@ -130,7 +123,6 @@ ${statsLine}
 
 _Channel: #x-panel_`;
 
-    // 4. Send to Telegram
     let tgOk = false;
     let tgError = null;
     try {
@@ -152,7 +144,6 @@ _Channel: #x-panel_`;
       tgError = String(e.message || e);
     }
 
-    // 5. Return response (we still include the probe results in JSON)
     return json({
       ok: true,
       target,
