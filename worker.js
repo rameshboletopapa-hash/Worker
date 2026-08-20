@@ -1,11 +1,11 @@
 // ============================================================
-// X-Panel — Firebase RTDB Security Probe + Device Stats → Telegram
+// X-Panel MaksudXpanel — Firebase RTDB Probe + Device Stats → Telegram
 // ============================================================
-// This Worker probes a Firebase RTDB and sends a combined message
-// with the security verdict and device stats (total, online, offline).
-// The exposed endpoints list and probe count are NOT shown.
+// Receives a POST to /probe with { url, total, online, offline }
+// Probes the RTDB for public read exposure and sends a combined
+// message to Telegram.
 //
-// Env vars (set via `wrangler secret put`):
+// Environment variables (set with `wrangler secret put`):
 //   BOT_TOKEN   — Telegram bot token
 //   CHAT_ID     — Telegram channel/group chat ID
 // ============================================================
@@ -24,7 +24,7 @@ export default {
       return new Response(
         JSON.stringify({
           status: 'ok',
-          service: 'x-panel-rtdb-probe',
+          service: 'x-panel-maksud',
           note: 'POST { url, total, online, offline } to /probe'
         }),
         { status: 200, headers: { 'content-type': 'application/json', ...corsHeaders() } }
@@ -42,7 +42,7 @@ export default {
       );
     }
 
-    // 1. Parse request body
+    // 1. Parse body
     let body;
     try {
       body = await request.json();
@@ -53,14 +53,16 @@ export default {
     const target = (body?.url || '').trim();
     if (!target) return json({ error: 'Missing "url" field' }, 400);
 
-    // Basic validation
-    if (!/^https:\/\/[a-zA-Z0-9-]+\.firebaseio\.com\/?$/.test(target)) {
-      return json({ error: 'URL must look like https://<project>.firebaseio.com' }, 400);
+    // ✅ UPDATED: Accept BOTH firebaseio.com AND firebasedatabase.app (with optional region)
+    // Matches: https://project.firebaseio.com OR https://project.region.firebasedatabase.app
+    if (!/^https:\/\/[a-zA-Z0-9-]+\.(firebaseio\.com|firebasedatabase\.app)(\/|$)/.test(target)) {
+      return json({ error: 'URL must be a valid Firebase RTDB URL (firebaseio.com or firebasedatabase.app)' }, 400);
     }
 
+    // Normalize: ensure trailing slash
     const normalized = target.endsWith('/') ? target : target + '/';
 
-    // 2. Probe the RTDB (but we won't show the results in the message)
+    // 2. Probe the RTDB (we still do it, but won't show all exposed paths in Telegram)
     const probePaths = [
       '.json?shallow=true',
       'device_count.json',
@@ -96,12 +98,12 @@ export default {
     const exposedPaths = results.filter(r => r.exposed).map(r => r.path);
     const verdict = exposedPaths.length > 0 ? 'PUBLIC' : 'SECURED';
 
-    // 3. Build the Telegram message – clean and minimal
+    // 3. Build the Telegram message – clean, blockquoted, with stats
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
     const verdictEmoji = verdict === 'PUBLIC' ? '🔓' : '🔒';
     const verdictStatus = verdict === 'PUBLIC' ? '⚠️ Exposed' : '✅ Secured';
 
-    // Device stats (must be provided in the request)
+    // Device stats (optional)
     const total = body?.total;
     const online = body?.online;
     const offline = body?.offline;
@@ -111,7 +113,7 @@ export default {
     if (hasStats) {
       statsLine = `> 🩶 **Total:** \`${total}\`  ·  💚 **Online:** \`${online}\`  ·  💔 **Offline:** \`${offline}\``;
     } else {
-      statsLine = `> *Device stats not provided.*`;
+      statsLine = '> *Device stats not provided.*';
     }
 
     const logText =
@@ -146,13 +148,13 @@ _Channel: #x-panel_`;
       tgError = String(e.message || e);
     }
 
-    // 5. Return response
+    // 5. Return response (we still include the probe results in JSON)
     return json({
       ok: true,
       target,
       verdict,
-      exposedPaths,   // still available in the JSON response, but not in the Telegram message
-      results,        // still available in the JSON response
+      exposedPaths,
+      results,
       telegram: { posted: tgOk, error: tgError },
       timestamp: now
     });
